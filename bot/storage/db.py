@@ -78,6 +78,24 @@ CREATE TABLE IF NOT EXISTS runner_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS monitor_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    quotex_name TEXT NOT NULL,
+    feed TEXT,
+    symbol TEXT,
+    direction INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    price REAL NOT NULL,
+    expiry_seconds INTEGER NOT NULL,
+    contributors TEXT,
+    votes_long INTEGER, votes_short INTEGER, votes_flat INTEGER,
+    suggested_at TEXT NOT NULL,
+    resolved_at TEXT,
+    exit_price REAL,
+    outcome TEXT NOT NULL DEFAULT 'PENDING'
+);
+CREATE INDEX IF NOT EXISTS idx_monitor_name ON monitor_signals(quotex_name, ts);
 """
 
 
@@ -201,6 +219,150 @@ class Database:
         except json.JSONDecodeError:
             logger.warning("corrupt state blob for key {} — ignored", key)
             return None
+
+    # ------------------------------------------------------------------ monitor
+    def ensure_monitor_schema(self) -> None:
+        self.conn.executescript(
+            "CREATE TABLE IF NOT EXISTS monitor_signals ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " ts TEXT NOT NULL, quotex_name TEXT NOT NULL,"
+            " feed TEXT, symbol TEXT,"
+            " direction INTEGER NOT NULL, confidence REAL NOT NULL,"
+            " price REAL NOT NULL, expiry_seconds INTEGER NOT NULL,"
+            " contributors TEXT,"
+            " votes_long INTEGER, votes_short INTEGER, votes_flat INTEGER,"
+            " suggested_at TEXT NOT NULL, resolved_at TEXT,"
+            " exit_price REAL, outcome TEXT NOT NULL DEFAULT 'PENDING')"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_monitor_name "
+            "ON monitor_signals(quotex_name, ts)")
+        self.conn.commit()
+
+    def save_monitor_signal(self, *, ts: datetime, quotex_name: str, feed: str,
+                            symbol: str, direction: int, confidence: float,
+                            price: float, expiry_seconds: int,
+                            contributors: str, votes_long: int,
+                            votes_short: int, votes_flat: int) -> None:
+        self.conn.execute(
+            """INSERT INTO monitor_signals
+               (ts, quotex_name, feed, symbol, direction, confidence, price,
+                expiry_seconds, contributors, votes_long, votes_short,
+                votes_flat, suggested_at, outcome)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING')""",
+            (_iso(ts), quotex_name, feed, symbol, direction, confidence,
+             price, expiry_seconds, contributors, votes_long, votes_short,
+             votes_flat, _iso(utc_now())),
+        )
+        self.conn.commit()
+
+    def pending_monitor_signals(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM monitor_signals WHERE outcome='PENDING' ORDER BY ts"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_monitor_signal(self, signal_id: int, exit_price: float,
+                               outcome: str) -> None:
+        self.conn.execute(
+            "UPDATE monitor_signals SET exit_price=?, outcome=?, resolved_at=? "
+            "WHERE id=?",
+            (exit_price, outcome, _iso(utc_now()), signal_id),
+        )
+        self.conn.commit()
+
+    def monitor_signals_recent(self, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM monitor_signals ORDER BY suggested_at DESC LIMIT ?",
+            (limit,))
+        return [dict(r) for r in rows.fetchall()]
+
+    # ------------------------------------------------------------------ quotex trades
+    def ensure_quotex_schema(self) -> None:
+        self.conn.executescript(
+            "CREATE TABLE IF NOT EXISTS quotex_trades ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " ts TEXT NOT NULL, asset TEXT NOT NULL,"
+            " direction TEXT NOT NULL, amount REAL NOT NULL,"
+            " expiry_seconds INTEGER NOT NULL, account TEXT NOT NULL,"
+            " payout_at_placement REAL, order_id TEXT,"
+            " status TEXT NOT NULL DEFAULT 'OPEN',"
+            " result TEXT, profit REAL, settled_at TEXT)"
+        )
+        self.conn.commit()
+
+    def save_quotex_trade(self, *, ts: datetime, asset: str, direction: str,
+                          amount: float, expiry_seconds: int, account: str,
+                          payout_at_placement: float | None,
+                          order_id: str) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO quotex_trades
+               (ts, asset, direction, amount, expiry_seconds, account,
+                payout_at_placement, order_id, status)
+               VALUES (?,?,?,?,?,?,?,?, 'OPEN')""",
+            (_iso(ts), asset, direction, amount, expiry_seconds, account,
+             payout_at_placement, order_id),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def open_quotex_trades(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM quotex_trades WHERE status='OPEN' ORDER BY ts")
+        return [dict(r) for r in rows.fetchall()]
+
+    def settle_quotex_trade(self, trade_id: int, result: str,
+                            profit: float) -> None:
+        self.conn.execute(
+            "UPDATE quotex_trades SET status='SETTLED', result=?, profit=?, "
+            "settled_at=? WHERE id=?",
+            (result, profit, _iso(utc_now()), trade_id),
+        )
+        self.conn.commit()
+
+    def quotex_trades_recent(self, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM quotex_trades ORDER BY ts DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows.fetchall()]
+
+    def quotex_stats(self) -> dict:
+        row = dict(self.conn.execute(
+            "SELECT COUNT(*) AS n,"
+            " SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) AS wins,"
+            " SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) AS losses,"
+            " SUM(CASE WHEN result='DRAW' THEN 1 ELSE 0 END) AS draws,"
+            " SUM(profit) AS profit_total"
+            " FROM quotex_trades WHERE status='SETTLED'").fetchone())
+        resolved = (row.get("wins") or 0) + (row.get("losses") or 0) \
+            + (row.get("draws") or 0)
+        row["resolved"] = resolved
+        row["hit_rate"] = (row.get("wins") or 0) / resolved if resolved else None
+        return row
+
+    def monitor_stats(self) -> dict:
+        """Hit-rate stats over RESOLVED suggestions, overall and per instrument."""
+        overall = dict(self.conn.execute(
+            "SELECT COUNT(*) AS n,"
+            " SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,"
+            " SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) AS losses,"
+            " SUM(CASE WHEN outcome='TIE' THEN 1 ELSE 0 END) AS ties,"
+            " SUM(CASE WHEN outcome='PENDING' THEN 1 ELSE 0 END) AS pending"
+            " FROM monitor_signals").fetchone())
+        by_inst_rows = self.conn.execute(
+            "SELECT quotex_name, COUNT(*) AS n,"
+            " SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,"
+            " SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) AS losses,"
+            " SUM(CASE WHEN outcome='TIE' THEN 1 ELSE 0 END) AS ties"
+            " FROM monitor_signals GROUP BY quotex_name ORDER BY n DESC"
+        ).fetchall()
+        resolved = (overall.get("wins") or 0) + (overall.get("losses") or 0) \
+            + (overall.get("ties") or 0)
+        overall["resolved"] = resolved
+        overall["hit_rate"] = (overall.get("wins") or 0) / resolved if resolved else None
+        return {
+            "overall": overall,
+            "by_instrument": [dict(r) for r in by_inst_rows],
+        }
 
     # ------------------------------------------------------------------ helpers
     @staticmethod

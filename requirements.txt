@@ -16,6 +16,11 @@ pyarrow>=15.0            # parquet candle cache
 ccxt>=4.3                # crypto OHLCV, public endpoints
 yfinance>=0.2.40         # stocks / ETFs / forex
 
+# --- optional: Quotex integration (UNOFFICIAL, binary options, high risk) ---
+# Not installed by default. Only if you deliberately want the Quotex
+# provider/broker (see README "Quotex integration" first):
+# pip install git+https://github.com/ChipaDevTeam/QuotexAPI.git
+
 # --- dashboard ---
 streamlit>=1.35
 plotly>=5.22

@@ -121,3 +121,92 @@ logging:
 dashboard:
   port: 8501
   refresh_seconds: 30
+
+# =====================================================================
+# Quotex signal monitor — ANALYSIS ONLY, PLACES NO ORDERS
+# ---------------------------------------------------------------------
+# Maps Quotex-style instrument names to free feeds, runs the strategy
+# engine, and shows UP/DOWN/SKIP suggestions. Every suggestion is scored
+# (WIN/LOSS/TIE) so you can see the real hit rate vs the break-even math
+# (at 85% payout you must sustain ~54% winners just to break even).
+# =====================================================================
+
+quotex_monitor:
+  enabled: true
+  expiry_seconds: 60         # suggested direction horizon (M1 = 60)
+  min_confidence: 0.60       # most bars are SKIP — that is the system working
+  poll_seconds: 30
+  cooldown_seconds: 180      # per-instrument gap between suggestions
+  timeframe: "1m"
+  payout_pct: 0.85           # used ONLY for the break-even honesty math
+  loss_pct: 1.00
+  # feed: crypto -> ccxt | fx -> yfinance | quotex -> UNOFFICIAL native feed
+  # (needs QUOTEX_SSID in .env + the optional QuotexAPI library; the only
+  #  way to see OTC pairs, which exist nowhere else)
+  instruments:
+    - quotex_name: "EUR/USD"
+      feed: fx
+      symbol: EURUSD=X
+    - quotex_name: "GBP/USD"
+      feed: fx
+      symbol: GBPUSD=X
+    - quotex_name: "BTC/USD"
+      feed: crypto
+      symbol: BTC/USDT
+    - quotex_name: "ETH/USD"
+      feed: crypto
+      symbol: ETH/USDT
+    - quotex_name: "EUR/USD (OTC)"
+      feed: quotex
+      symbol: "EURUSD_otc"
+
+# =====================================================================
+# Quotex integration — UNOFFICIAL API, BINARY OPTIONS, VERY HIGH RISK
+# ---------------------------------------------------------------------
+# ChipaDevTeam/QuotexAPI is reverse-engineered; some endpoints are still
+# mock/WIP upstream. This integration can break without notice.
+#
+# DEFAULTS: DEMO account, data-only. Trading requires BOTH
+#   quotex.trading.enabled: true   AND   quotex.trading.account: real
+# AND typing the confirmation phrase at startup. Run `python main.py
+# quotex-health` FIRST to verify SSID + feed before anything else.
+# =====================================================================
+
+quotex:
+  enabled: true               # master switch for provider + broker
+
+  connection:
+    reconnect_enabled: true
+    max_reconnect_attempts: 5
+    reconnect_delay: 5
+    rate_limit_sleep: 0.4     # seconds between API calls
+    max_retries: 4
+    retry_backoff: 1.8
+
+  trading:
+    enabled: false            # false = data/health only; no orders, ever
+    account: demo             # demo | real  (real needs the typed confirmation)
+    confirm_phrase: "I UNDERSTAND BINARY OPTIONS CAN LOSE ALL MY MONEY"
+    amount_usd: 1.0           # stake per trade (risk manager also caps this)
+    expiry_seconds: 60
+    poll_seconds: 30
+
+  # Binary-specific risk rules — hard-capped in bot/risk/binary.py,
+  # cannot be bypassed from this file.
+  risk:
+    max_trade_pct: 0.01       # max stake as fraction of balance (cap 5%)
+    max_open_trades: 2        # cap 5
+    max_daily_loss_pct: 0.05  # daily kill switch (cap 20%)
+    min_payout_pct: 0.80      # refuse signals below this payout (floor 0.5)
+    cooldown_seconds: 120     # min seconds between trades per asset
+
+  # Assets to analyze/trade. Names must match Quotex asset ids (the health
+  # check lists what your account actually offers).
+  assets:
+    - EURUSD
+    - GBPUSD
+    - BTCUSD
+
+  data:
+    timeframe: "60"           # Quotex candle period in seconds (60 = 1m)
+    history_bars: 600

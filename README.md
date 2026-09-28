@@ -220,6 +220,86 @@ Covers position sizing, risk caps, kill switch/circuit breaker, trailing
 stops, metric math, aggregator voting, and anti-lookahead fill rules
 (next-bar-open entries, fees/slippage charged, warmup respected).
 
+## Quotex integration (unofficial — read before enabling)
+
+The bot can connect to **Quotex** (market-qx.trade / qxbroker.com) through
+[ChipaDevTeam/QuotexAPI](https://github.com/ChipaDevTeam/QuotexAPI) as an
+optional data source and — only if you explicitly arm it — a binary-options
+execution path.
+
+### Read this first — honest risk statement
+
+- **Binary options carry very high risk.** The format is structurally closer
+  to gambling than investing: fixed expiry, all-or-nothing settlement. At an
+  85% payout you must sustain a **54.1% win rate just to break even** (52.1%
+  at 92%). **Most retail binary-options traders lose money over time.**
+- **Quotex is an offshore, unregulated counterparty.** Settlement, withdrawal,
+  and account-freezing risk sit entirely with you.
+- **The API is unofficial and reverse-engineered.** It is not affiliated with
+  Quotex, violates the platform's terms of service if used for trading, and
+  **may break without notice** — upstream itself documents that some endpoints
+  still return mock/WIP data. Every call in this integration is retry-wrapped
+  and error-logged, but that cannot make an unofficial API reliable.
+- **No strategy predicts 1-minute direction reliably.** The monitor's job is
+  to make its own hit rate visible — if it says SKIP most of the time, that
+  is the system working.
+
+### What was added
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Data provider | `bot/quotex/provider.py` | Same `DataProvider` interface as ccxt/yfinance; SSID auth, retry/backoff, payload normalization for WIP upstream formats |
+| Binary broker | `bot/quotex/broker.py` | `buy(asset, amount, direction, expiry)` CALL/PUT trades — no stops exist in binaries, so it does not pretend to fit the spot `Broker` interface |
+| Binary risk | `bot/risk/binary.py` | Max % of balance per trade, max concurrent trades, daily-loss kill switch, **minimum payout gate** — all hard-capped in code, non-bypassable |
+| Safety gate | `bot/quotex/safety.py` | REAL account requires a typed confirmation phrase |
+| Health check | `bot/quotex/health.py` | Verifies credentials → library → session → assets → payouts → **real candle flow** before anything trades |
+| Runner | `bot/quotex/runner.py` | Continuous analysis loop; trades only when explicitly enabled |
+
+### Setup
+
+```bash
+# 1. install the unofficial library (deliberately not in requirements.txt)
+pip install git+https://github.com/ChipaDevTeam/QuotexAPI.git
+
+# 2. credentials in .env (git-ignored) — SSID preferred
+#    Quotex web -> F12 -> Application -> Cookies -> copy the `ssid` value
+QUOTEX_SSID=<paste the cookie value; full 42["authorization",{...}] form also works>
+QUOTEX_EMAIL=          # fallback login; SSID is more reliable
+QUOTEX_PASSWORD=
+
+# 3. ALWAYS verify the session + feed first
+python main.py quotex-health
+
+# 4a. analysis-only monitoring (default — places no orders)
+python main.py quotex
+
+# 4b. DEMO-account trading: set quotex.trading.enabled: true in config.yaml
+# 4c. REAL-account trading: ALSO set account: real — then type the
+#     confirmation phrase at startup. Two config keys + typed phrase.
+```
+
+### Safety defaults
+
+* `AccountType.DEMO` is the default and is re-asserted on every connect.
+* `trading.enabled: false` (default) = suggestions and health checks only;
+  no order path is ever constructed.
+* REAL mode refuses to start if the health check fails, if the balance can't
+  be read, or if the typed confirmation doesn't match.
+* SSIDs expire after hours — refresh from your browser; the health check
+  detects it.
+
+## Quotex signal monitor (analysis only, no orders)
+
+`python main.py monitor` runs a continuous monitor that maps Quotex-style
+instrument names to price feeds — crypto via Binance, FX via yfinance, and
+(optionally, with the SSID installed) Quotex's own feed for OTC pairs, which
+exist nowhere else — runs the strategy engine on each closed 1-minute bar,
+and logs **UP / DOWN / SKIP** suggestions with confidence to SQLite. Every
+suggestion is scored after expiry (**WIN / LOSS / TIE**) and the dashboard
+shows the real hit rate next to the break-even math for your payout. It
+never places an order and never touches the Quotex UI — a human decides
+everything.
+
 ## Configuration quick reference
 
 Everything lives in `config.yaml`: watchlist + timeframes, strategy

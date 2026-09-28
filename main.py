@@ -216,6 +216,89 @@ def cmd_train(args) -> int:
     return 0
 
 
+# --------------------------------------------------------------------- monitor
+def cmd_monitor(args) -> int:
+    cfg = _load(args.config)
+    from bot.monitor import QuotexSignalMonitor
+    from bot.storage.db import Database
+
+    db = Database(cfg.root / str(cfg.storage.get("db_path", "data/trader.db")))
+    monitor = QuotexSignalMonitor(cfg, db)
+    logger.warning("""
+============================================================
+ QUOTEX SIGNAL MONITOR — ANALYSIS ONLY.
+ It SUGGESTS up/down/skip and scores its own hit rate.
+ It NEVER places an order or automates any broker.
+ Binary options are negative-expectation for most people;
+ at 85% payout you must sustain ~54% winners to break even.
+ A human decides every trade. Nothing here predicts the future.
+============================================================""")
+    try:
+        monitor.run_forever()
+    except KeyboardInterrupt:
+        logger.info("monitor interrupted — exiting cleanly")
+    return 0
+
+
+# --------------------------------------------------------------------- quotex
+def cmd_quotex_health(args) -> int:
+    cfg = _load(args.config)
+    from bot.quotex.health import run_health_check
+
+    ok, checks = run_health_check(cfg)
+    print("\n=== QUOTEX HEALTH CHECK ===")
+    for c in checks:
+        print(f"[{c.mark}] {c.step:12s} {c.detail}")
+    print("===========================")
+    if ok:
+        print("ALL CHECKS PASSED — session, data feed, and payouts are working.")
+        return 0
+    print("HEALTH CHECK FAILED — fix the FAIL items above before trading.")
+    print("Reminder: SSID tokens expire after some hours — refresh from your browser.")
+    return 1
+
+
+def cmd_quotex(args) -> int:
+    cfg = _load(args.config)
+    from bot.core.safety import confirm_live_mode  # noqa: F401 (logging side effect only)
+    from bot.quotex.safety import confirm_real_account
+    from bot.storage.db import Database
+
+    qcfg = cfg.raw.setdefault("quotex", {})
+    tcfg = qcfg.setdefault("trading", {})
+    trading_enabled = bool(tcfg.get("enabled", False))
+    account = str(tcfg.get("account", "demo")).lower()
+
+    confirmed_real = False
+    if trading_enabled and account == "real":
+        if not confirm_real_account(str(tcfg.get("confirm_phrase", "")),
+                                    interactive=True):
+            tcfg["account"] = "demo"
+            logger.warning("REAL confirmation declined/failed — falling back to "
+                           "DEMO for this session.")
+        else:
+            confirmed_real = True
+    elif trading_enabled:
+        logger.info("quotex trading enabled on DEMO account")
+    else:
+        logger.info("quotex trading DISABLED in config — running in analysis-only "
+                    "mode (suggestions + monitoring, no orders)")
+
+    from bot.quotex.runner import QuotexRunner
+    from bot.storage.db import Database
+    db = Database(cfg.root / str(cfg.storage.get("db_path", "data/trader.db")))
+    try:
+        runner = QuotexRunner(cfg, db, confirmed_real=confirmed_real)
+    except PermissionError as exc:
+        logger.error("{}", exc)
+        return 3
+    try:
+        runner.run_forever()
+    except KeyboardInterrupt:
+        logger.info("quotex runner interrupted — exiting")
+    return 0
+
+
 # --------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -232,6 +315,9 @@ def build_parser() -> argparse.ArgumentParser:
         ("paper", "start the paper-trading loop (default, safe)"),
         ("live", "arm live trading (requires config + typed confirmation)"),
         ("dashboard", "launch the local Streamlit dashboard"),
+        ("monitor", "quotex signal monitor (analysis only, places no orders)"),
+        ("quotex", "quotex runner: analysis + optional binary trading (DEMO default)"),
+        ("quotex-health", "verify quotex SSID, feed, and payouts before trading"),
         ("train", "walk-forward train the ML classifier locally"),
     ]:
         sp = sub.add_parser(name, help=help_)
@@ -242,7 +328,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="override provider (ccxt|yfinance|csv)")
         sp.set_defaults(func={"download": cmd_download, "backtest": cmd_backtest,
                               "paper": cmd_paper, "live": cmd_live,
-                              "dashboard": cmd_dashboard,
+                              "dashboard": cmd_dashboard, "monitor": cmd_monitor,
+                              "quotex": cmd_quotex, "quotex-health": cmd_quotex_health,
                               "train": cmd_train}[name])
     return p
 
