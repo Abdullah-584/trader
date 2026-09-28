@@ -1,0 +1,30 @@
+# trader — all dependencies are free and open source.
+# Python 3.11+ recommended. Install into a virtualenv:
+#   python -m venv .venv
+#   .venv/Scripts/pip install -r requirements.txt     (Windows)
+#   .venv/bin/pip install -r requirements.txt         (Linux/macOS)
+
+# --- core ---
+numpy>=1.26
+pandas>=2.2
+pyyaml>=6.0
+loguru>=0.7
+python-dotenv>=1.0
+pyarrow>=15.0            # parquet candle cache
+
+# --- market data (public endpoints; no API keys needed) ---
+ccxt>=4.3                # crypto OHLCV, public endpoints
+yfinance>=0.2.40         # stocks / ETFs / forex
+
+# --- dashboard ---
+streamlit>=1.35
+plotly>=5.22
+
+# --- optional local AI signal layer ---
+scikit-learn>=1.4        # walk-forward ML classifier (trained locally)
+
+# --- optional alerts ---
+plyer>=2.1               # desktop notifications (off by default)
+
+# --- dev / tests ---
+pytest>=8.0

@@ -1,0 +1,123 @@
+# =====================================================================
+# trader — configuration
+# ---------------------------------------------------------------------
+# DEFAULTS ARE PAPER-FIRST. Live trading requires ALL of:
+#   1. mode: live            (below)
+#   2. live.enabled: true    (below)
+#   3. typing the confirmation phrase at startup
+# Risk settings have hard caps enforced in code and CANNOT be bypassed
+# by editing this file. See bot/core/config.py.
+# =====================================================================
+
+mode: paper                 # paper | live
+
+data:
+  provider: ccxt            # default provider: ccxt | yfinance
+  exchange: binance         # ccxt exchange id (public endpoints, no key)
+  cache_dir: data/cache     # parquet candle cache (git-ignored)
+  rate_limit_sleep: 0.25    # seconds between API calls
+  max_retries: 5
+  retry_backoff: 1.8        # exponential backoff base for retries
+  fill_gaps: true           # detect and re-download missing candles
+  watchlist:
+    - symbol: BTC/USDT      # ccxt pair format -> ccxt provider
+      provider: auto
+    - symbol: ETH/USDT
+      provider: auto
+    - symbol: SPY           # yfinance ticker (no "/") -> yfinance
+      provider: auto
+  primary_timeframe: "1h"   # timeframe used by the live/paper runner
+  timeframes: ["1h", "1d"]  # allowed: 1m, 5m, 15m, 1h, 1d
+  history_bars: 1500        # candles to download per symbol/timeframe
+
+# --- strategy plugins -----------------------------------------------
+# weight = vote weight in the signal aggregator (0 disables effectively)
+strategies:
+  ema_rsi_trend:
+    enabled: true
+    weight: 1.0
+    params:
+      fast: 21
+      slow: 55
+      rsi_period: 14
+      rsi_buy_max: 70       # don't buy into overbought
+      rsi_sell_min: 30
+  bollinger_reversion:
+    enabled: true
+    weight: 0.8
+    params:
+      period: 20
+      std: 2.0
+      rsi_confirm: true     # require RSI oversold/overbought confirmation
+  atr_breakout:
+    enabled: true
+    weight: 0.8
+    params:
+      lookback: 55          # Donchian-style channel lookback
+      atr_period: 14
+      atr_multiplier: 2.5   # breakout must exceed channel by ATR * mult
+  ml_classifier:
+    enabled: false          # train first: `python main.py train` (stage 3+)
+    weight: 0.5
+    params:
+      horizon: 8            # predict forward return over N bars
+      threshold: 0.55       # min probability to vote long
+      model: hist_gb        # sklearn HistGradientBoosting (local, free)
+
+# --- signal aggregation ---------------------------------------------
+signals:
+  mode: weighted_vote       # weighted_vote | majority | unanimous
+  min_confidence: 0.45      # 0..1 required to act on an entry
+
+# --- risk management (mandatory; hard-capped in code) ----------------
+risk:
+  risk_per_trade: 0.01      # 1% of equity max loss per trade (hard cap 2%)
+  max_positions: 3          # max concurrent open positions
+  max_daily_loss_pct: 0.03  # daily kill switch (hard cap 10%)
+  max_drawdown_pct: 0.15    # drawdown circuit breaker (hard cap 50%)
+  stop_atr_multiple: 2.0    # initial stop = ATR * this
+  take_profit_r_multiple: 2.0  # TP = stop distance * this
+  trailing_stop: true
+  trailing_atr_multiple: 3.0
+  min_stop_distance_pct: 0.002 # avoid absurdly tight stops
+  max_position_pct: 0.25    # position value <= 25% of equity
+  fees_pct: 0.001           # simulated fee per side (0.1%)
+  slippage_pct: 0.0005      # simulated slippage per side (0.05%)
+
+paper:
+  starting_cash: 10000.0
+  base_currency: USDT       # quote currency for paper accounting
+
+runner:
+  poll_seconds: 60          # loop interval; signals act once per new bar
+
+live:                       # ignored unless mode: live AND enabled: true
+  enabled: false
+  exchange: binance
+  confirm_phrase: "I UNDERSTAND LIVE TRADING CAN LOSE ALL MY MONEY"
+  default_order_type: market
+
+alerts:
+  desktop: false            # plyer notifications
+  telegram: false           # needs TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env
+
+ml:
+  model_dir: data/models
+  walk_forward_folds: 5
+  embargo_bars: 24          # gap between train/test to prevent leakage
+
+backtest:
+  start: null               # null = use full available history
+  end: null
+  warmup_bars: 200          # bars consumed by indicators before trading
+
+storage:
+  db_path: data/trader.db
+
+logging:
+  level: INFO               # console level; file log is always DEBUG
+  dir: data/logs
+
+dashboard:
+  port: 8501
+  refresh_seconds: 30

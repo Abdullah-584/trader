@@ -1,0 +1,35 @@
+# --- secrets (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# --- runtime data: cache, sqlite, logs, models ---
+data/*
+!data/.gitkeep
+# keep only the offline sample dataset, nothing else in data/csv
+!data/csv
+data/csv/*
+!data/csv/TEST.csv
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- editors / os ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- local tooling ---
+.freebuff/
